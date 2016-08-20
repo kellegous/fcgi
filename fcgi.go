@@ -99,7 +99,8 @@ func (c *Conn) send(id uint16, recType recType, w *buffer) error {
 	return c.sendBytes(w.Bytes())
 }
 
-func paramsFromRequest(r *http.Request) map[string]string {
+// ParamsFromRequest ...
+func ParamsFromRequest(r *http.Request) map[string]string {
 	params := map[string]string{
 		"REQUEST_METHOD":  r.Method,
 		"SERVER_PROTOCOL": fmt.Sprintf("HTTP/%d.%d", r.ProtoMajor, r.ProtoMinor),
@@ -113,7 +114,8 @@ func paramsFromRequest(r *http.Request) map[string]string {
 	for k, v := range r.Header {
 		name := fmt.Sprintf("HTTP_%s",
 			strings.ToUpper(strings.Replace(k, "-", "_", -1)))
-		// TODO(knorton): What the heck to do we do with multi-value headers?
+		// TODO(knorton): What the fuck do these shit servers do with multi-value
+		// headers?
 		params[name] = v[0]
 	}
 
@@ -329,15 +331,6 @@ func (c *Conn) BeginRequest(
 	}
 
 	return r, nil
-}
-
-// Handle ...
-func (c *Conn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-}
-
-// Do ...
-func (c *Conn) Do(r *http.Request) (*http.Response, error) {
-	return nil, nil
 }
 
 func sendErr(ch chan error, err error) bool {
