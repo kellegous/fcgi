@@ -1,12 +1,17 @@
 package fcgi
 
 import (
+	"bufio"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
+	"net/textproto"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -280,15 +285,29 @@ func (r *Request) Wait() error {
 	return <-r.ce
 }
 
-func (r *Request) receive(wout, werr io.Writer) {
+func (r *Request) receive(wout, werr io.WriteCloser) {
 	for item := range r.cw {
 		switch t := item.(type) {
 		case stdout:
+			if len(t) == 0 {
+				if err := wout.Close(); err != nil {
+					sendErr(r.ce, err)
+					return
+				}
+				continue
+			}
 			if _, err := wout.Write([]byte(t)); err != nil {
 				sendErr(r.ce, err)
 				return
 			}
 		case stderr:
+			if len(t) == 0 {
+				if err := werr.Close(); err != nil {
+					sendErr(r.ce, err)
+					return
+				}
+				continue
+			}
 			if _, err := werr.Write([]byte(t)); err != nil {
 				sendErr(r.ce, err)
 				return
@@ -297,12 +316,81 @@ func (r *Request) receive(wout, werr io.Writer) {
 	}
 }
 
+func statusFromHeaders(h http.Header) (int, error) {
+	text := h.Get("Status")
+	if text == "" {
+		return 200, nil
+	}
+
+	s, err := strconv.ParseInt(text, 10, 32)
+	if err != nil {
+		return 0, err
+	}
+
+	return int(s), nil
+}
+
+func filterHeaders(h http.Header) {
+	h.Del("Status")
+}
+
+func (c *Conn) ServeHTTP(
+	path string,
+	w http.ResponseWriter,
+	r *http.Request) {
+	pr, pw := io.Pipe()
+
+	params := ParamsFromRequest(r)
+	params["SCRIPT_FILENAME"] = path
+
+	req, err := c.BeginRequest(
+		params,
+		r.Body,
+		pw,
+		os.Stderr)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	br := bufio.NewReader(pr)
+	tr := textproto.NewReader(br)
+	mh, err := tr.ReadMIMEHeader()
+	if err != nil {
+		log.Panic(err)
+	}
+
+	h := http.Header(mh)
+	s, err := statusFromHeaders(h)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	if _, err := fmt.Fprintf(w,
+		"HTTP/1.1 %03d %s\r\n",
+		s,
+		http.StatusText(s)); err != nil {
+		log.Panic(err)
+	}
+
+	if err := h.Write(w); err != nil {
+		log.Panic(err)
+	}
+
+	if _, err := io.Copy(w, br); err != nil {
+		log.Panic(err)
+	}
+
+	if err := req.Wait(); err != nil {
+		log.Panic(err)
+	}
+}
+
 // BeginRequest ...
 func (c *Conn) BeginRequest(
 	params map[string]string,
 	body io.Reader,
-	wout io.Writer,
-	werr io.Writer) (*Request, error) {
+	wout io.WriteCloser,
+	werr io.WriteCloser) (*Request, error) {
 
 	r := &Request{
 		c:  c,
@@ -391,6 +479,7 @@ func receive(c *Conn) {
 			r.cw <- stderr(buf)
 		case typeEndRequest:
 			c.unsub(h.ID)
+			log.Println(buf)
 			r.ce <- nil
 			return
 		}

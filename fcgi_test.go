@@ -12,7 +12,7 @@ import (
 )
 
 func TestPHP(t *testing.T) {
-	c, err := Dial("tcp", "192.168.42.101:8061")
+	c, err := Dial("tcp", "192.168.42.101:9000")
 	if err != nil {
 		t.Fatal(err)
 	}
