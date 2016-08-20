@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -338,10 +339,18 @@ func (c *Conn) ServeHTTP(
 	path string,
 	w http.ResponseWriter,
 	r *http.Request) {
+
+	con, bw, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		log.Panic(err)
+	}
+	defer con.Close()
+
 	pr, pw := io.Pipe()
 
 	params := ParamsFromRequest(r)
 	params["SCRIPT_FILENAME"] = path
+	params["GO_RUNTIME"] = runtime.Version()
 
 	req, err := c.BeginRequest(
 		params,
@@ -365,18 +374,27 @@ func (c *Conn) ServeHTTP(
 		log.Panic(err)
 	}
 
-	if _, err := fmt.Fprintf(w,
+	if _, err := fmt.Fprintf(bw,
 		"HTTP/1.1 %03d %s\r\n",
 		s,
 		http.StatusText(s)); err != nil {
 		log.Panic(err)
 	}
 
-	if err := h.Write(w); err != nil {
+	if err := h.Write(bw); err != nil {
 		log.Panic(err)
 	}
 
-	if _, err := io.Copy(w, br); err != nil {
+	if _, err := fmt.Fprint(bw, "\r\n"); err != nil {
+		log.Panic(err)
+	}
+
+	if _, err := io.Copy(bw, br); err != nil {
+		log.Panic(err)
+	}
+
+	// TODO(knorton): Not sure if this is needed
+	if err := bw.Flush(); err != nil {
 		log.Panic(err)
 	}
 
@@ -422,6 +440,7 @@ func (c *Conn) BeginRequest(
 }
 
 func sendErr(ch chan error, err error) bool {
+	// TODO(knorton): This should terminate all writers also
 	select {
 	case ch <- err:
 		return true
@@ -479,9 +498,9 @@ func receive(c *Conn) {
 			r.cw <- stderr(buf)
 		case typeEndRequest:
 			c.unsub(h.ID)
-			log.Println(buf)
+			r.cw <- stdout(nil)
+			r.cw <- stderr(nil)
 			r.ce <- nil
-			return
 		}
 	}
 }
