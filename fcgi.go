@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/textproto"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -336,7 +335,7 @@ func filterHeaders(h http.Header) {
 }
 
 func (c *Conn) ServeHTTP(
-	path string,
+	params map[string]string,
 	w http.ResponseWriter,
 	r *http.Request) {
 
@@ -347,10 +346,6 @@ func (c *Conn) ServeHTTP(
 	defer con.Close()
 
 	pr, pw := io.Pipe()
-
-	params := ParamsFromRequest(r)
-	params["SCRIPT_FILENAME"] = path
-	params["GO_RUNTIME"] = runtime.Version()
 
 	req, err := c.BeginRequest(
 		params,
