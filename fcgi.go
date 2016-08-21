@@ -61,23 +61,57 @@ const (
 	statusUnknownRole
 )
 
-// Conn ...
-type Conn struct {
-	wl sync.Mutex
-	cn net.Conn
+// Client ...
+type Client struct {
+	c  *conn
+	cl sync.RWMutex
 
 	sl sync.RWMutex
 	sm map[uint16]*Request
 	id uint16
 }
 
-// Close ...
-func (c *Conn) Close() error {
-	c.shutdown(io.EOF)
-	return c.cn.Close()
+type conn struct {
+	l sync.Mutex
+	c net.Conn
 }
 
-func (c *Conn) sub(r *Request) {
+func (c *conn) sendBytes(p []byte) error {
+	c.l.Lock()
+	defer c.l.Unlock()
+	_, err := c.c.Write(p)
+	return err
+}
+
+func (c *conn) send(id uint16, recType recType, w *buffer) error {
+	defer w.Reset()
+	w.WriteHeader(id, recType, w.Len())
+	return c.sendBytes(w.Bytes())
+}
+
+func (c *conn) Close() error {
+	return c.c.Close()
+}
+
+// Close ...
+func (c *Client) Close() error {
+	c.shutdown(io.EOF)
+
+	c.cl.Lock()
+	defer c.cl.Unlock()
+
+	err := c.Close()
+	c.c = nil
+	return err
+}
+
+func (c *Client) conn() *conn {
+	c.cl.RLock()
+	defer c.cl.RUnlock()
+	return c.c
+}
+
+func (c *Client) sub(r *Request) {
 	c.sl.Lock()
 	defer c.sl.Unlock()
 	c.id++
@@ -85,23 +119,10 @@ func (c *Conn) sub(r *Request) {
 	c.sm[c.id] = r
 }
 
-func (c *Conn) unsub(id uint16) {
+func (c *Client) unsub(id uint16) {
 	c.sl.Lock()
 	defer c.sl.Unlock()
 	delete(c.sm, id)
-}
-
-func (c *Conn) sendBytes(p []byte) error {
-	c.wl.Lock()
-	defer c.wl.Unlock()
-	_, err := c.cn.Write(p)
-	return err
-}
-
-func (c *Conn) send(id uint16, recType recType, w *buffer) error {
-	defer w.Reset()
-	w.WriteHeader(id, recType, w.Len())
-	return c.sendBytes(w.Bytes())
 }
 
 // ParamsFromRequest ...
@@ -135,14 +156,14 @@ func ParamsFromRequest(r *http.Request) map[string]string {
 	return params
 }
 
-func writeBeginReq(c *Conn, w *buffer, id uint16) error {
+func writeBeginReq(c *conn, w *buffer, id uint16) error {
 	binary.Write(w, binary.BigEndian, roleResponder) // role
 	binary.Write(w, binary.BigEndian, flagKeepConn)  // flags
 	w.Write([]byte{0, 0, 0, 0, 0})                   // reserved
 	return c.send(id, typeBeginRequest, w)
 }
 
-func writeAbortReq(c *Conn, w *buffer, id uint16) error {
+func writeAbortReq(c *conn, w *buffer, id uint16) error {
 	return c.send(id, typeAbortRequest, w)
 }
 
@@ -156,7 +177,7 @@ func encodeLength(b []byte, n uint32) int {
 	return 1
 }
 
-func writeParams(c *Conn, w *buffer, id uint16, params map[string]string) error {
+func writeParams(c *conn, w *buffer, id uint16, params map[string]string) error {
 	var b [8]byte
 	for k, v := range params {
 		n := encodeLength(b[:], uint32(len(k)))
@@ -189,7 +210,7 @@ func writeParams(c *Conn, w *buffer, id uint16, params map[string]string) error 
 	return c.send(id, typeParams, w)
 }
 
-func writeStdin(c *Conn, w *buffer, id uint16, r io.Reader) error {
+func writeStdin(c *conn, w *buffer, id uint16, r io.Reader) error {
 	if r != nil {
 		for {
 			err := w.CopyFrom(r)
@@ -264,7 +285,7 @@ type stderr []byte
 // Request ...
 type Request struct {
 	id uint16
-	c  *Conn
+	c  *conn
 	ce chan error
 	cw chan interface{}
 }
@@ -334,7 +355,7 @@ func filterHeaders(h http.Header) {
 	h.Del("Status")
 }
 
-func (c *Conn) ServeHTTP(
+func (c *Client) ServeHTTP(
 	params map[string]string,
 	w http.ResponseWriter,
 	r *http.Request) {
@@ -399,14 +420,16 @@ func (c *Conn) ServeHTTP(
 }
 
 // BeginRequest ...
-func (c *Conn) BeginRequest(
+func (c *Client) BeginRequest(
 	params map[string]string,
 	body io.Reader,
 	wout io.WriteCloser,
 	werr io.WriteCloser) (*Request, error) {
 
+	conn := c.conn()
+
 	r := &Request{
-		c:  c,
+		c:  conn,
 		ce: make(chan error),
 		cw: make(chan interface{}),
 	}
@@ -416,17 +439,17 @@ func (c *Conn) BeginRequest(
 
 	c.sub(r)
 
-	if err := writeBeginReq(c, &buf, r.id); err != nil {
+	if err := writeBeginReq(conn, &buf, r.id); err != nil {
 		return nil, err
 	}
 
-	if err := writeParams(c, &buf, r.id, params); err != nil {
+	if err := writeParams(conn, &buf, r.id, params); err != nil {
 		return nil, err
 	}
 
 	go r.receive(wout, werr)
 
-	if err := writeStdin(c, &buf, r.id, body); err != nil {
+	if err := writeStdin(conn, &buf, r.id, body); err != nil {
 		close(r.cw)
 		return nil, err
 	}
@@ -444,7 +467,7 @@ func sendErr(ch chan error, err error) bool {
 	}
 }
 
-func (c *Conn) shutdown(err error) {
+func (c *Client) shutdown(err error) {
 	c.sl.Lock()
 	defer c.sl.Unlock()
 	for _, r := range c.sm {
@@ -452,16 +475,19 @@ func (c *Conn) shutdown(err error) {
 	}
 }
 
-func (c *Conn) getReq(id uint16) *Request {
+func (c *Client) getReq(id uint16) *Request {
 	c.sl.RLock()
 	defer c.sl.RUnlock()
 	return c.sm[id]
 }
 
-func receive(c *Conn) {
+func receive(c *Client) {
 	var h header
+
+	conn := c.conn()
+
 	for {
-		if err := binary.Read(c.cn, binary.BigEndian, &h); err != nil {
+		if err := binary.Read(conn.c, binary.BigEndian, &h); err != nil {
 			c.shutdown(err)
 			return
 		}
@@ -474,7 +500,7 @@ func receive(c *Conn) {
 		// TODO(knorton): These could be taken from a buffer pool
 		buf := make([]byte, int(h.ContentLength)+int(h.PaddingLength))
 
-		if _, err := io.ReadFull(c.cn, buf); err != nil {
+		if _, err := io.ReadFull(conn.c, buf); err != nil {
 			c.shutdown(err)
 			return
 		}
@@ -501,14 +527,16 @@ func receive(c *Conn) {
 }
 
 // Dial ...
-func Dial(network, addr string) (*Conn, error) {
+func Dial(network, addr string) (*Client, error) {
 	cn, err := net.Dial(network, addr)
 	if err != nil {
 		return nil, err
 	}
 
-	c := &Conn{
-		cn: cn,
+	c := &Client{
+		c: &conn{
+			c: cn,
+		},
 		sm: map[uint16]*Request{},
 	}
 
