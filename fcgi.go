@@ -339,6 +339,12 @@ func (r *Request) receive(wout, werr io.WriteCloser) {
 
 func statusFromHeaders(h http.Header) (int, error) {
 	text := h.Get("Status")
+
+	ix := strings.Index(text, " ")
+	if ix >= 0 {
+		text = text[:ix]
+	}
+
 	if text == "" {
 		return 200, nil
 	}
