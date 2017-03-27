@@ -100,7 +100,7 @@ func (c *Client) Close() error {
 	c.cl.Lock()
 	defer c.cl.Unlock()
 
-	err := c.Close()
+	err := c.c.Close()
 	c.c = nil
 	return err
 }
