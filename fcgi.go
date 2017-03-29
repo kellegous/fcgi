@@ -63,8 +63,7 @@ const (
 
 // Client ...
 type Client struct {
-	c  *conn
-	cl sync.RWMutex
+	c *conn
 
 	sl sync.RWMutex
 	sm map[uint16]*Request
@@ -95,20 +94,8 @@ func (c *conn) Close() error {
 
 // Close ...
 func (c *Client) Close() error {
-	c.shutdown(io.EOF)
-
-	c.cl.Lock()
-	defer c.cl.Unlock()
-
-	err := c.c.Close()
-	c.c = nil
-	return err
-}
-
-func (c *Client) conn() *conn {
-	c.cl.RLock()
-	defer c.cl.RUnlock()
-	return c.c
+	c.shutdown(errors.New("client terminated"))
+	return c.c.Close()
 }
 
 func (c *Client) sub(r *Request) {
@@ -284,16 +271,16 @@ type stderr []byte
 
 // Request ...
 type Request struct {
-	id uint16
-	c  *conn
-	ce chan error
-	cw chan interface{}
+	id       uint16
+	c        *Client
+	cw       chan interface{}
+	out, err io.Writer
 }
 
 // Abort ...
 func (r *Request) Abort() error {
 	var buf buffer
-	return writeAbortReq(r.c, &buf, r.id)
+	return writeAbortReq(r.c.c, &buf, r.id)
 }
 
 // ID ...
@@ -303,37 +290,36 @@ func (r *Request) ID() uint16 {
 
 // Wait ...
 func (r *Request) Wait() error {
-	return <-r.ce
-}
-
-func (r *Request) receive(wout, werr io.WriteCloser) {
 	for item := range r.cw {
 		switch t := item.(type) {
 		case stdout:
 			if len(t) == 0 {
-				if err := wout.Close(); err != nil {
-					sendErr(r.ce, err)
-					return
-				}
 				continue
 			}
-			if _, err := wout.Write([]byte(t)); err != nil {
-				sendErr(r.ce, err)
-				return
+			if _, err := r.out.Write([]byte(t)); err != nil {
+				r.drain()
+				return err
 			}
 		case stderr:
 			if len(t) == 0 {
-				if err := werr.Close(); err != nil {
-					sendErr(r.ce, err)
-					return
-				}
 				continue
 			}
-			if _, err := werr.Write([]byte(t)); err != nil {
-				sendErr(r.ce, err)
-				return
+			if _, err := r.err.Write([]byte(t)); err != nil {
+				r.drain()
+				return err
 			}
+		case error:
+			return t
 		}
+	}
+	return nil
+}
+
+func (r *Request) drain() {
+	r.c.unsub(r.id)
+	select {
+	case <-r.cw:
+	default:
 	}
 }
 
@@ -429,15 +415,14 @@ func (c *Client) ServeHTTP(
 func (c *Client) BeginRequest(
 	params map[string]string,
 	body io.Reader,
-	wout io.WriteCloser,
-	werr io.WriteCloser) (*Request, error) {
-
-	conn := c.conn()
+	wout io.Writer,
+	werr io.Writer) (*Request, error) {
 
 	r := &Request{
-		c:  conn,
-		ce: make(chan error),
-		cw: make(chan interface{}),
+		c:   c,
+		cw:  make(chan interface{}),
+		out: wout,
+		err: werr,
 	}
 
 	var buf buffer
@@ -445,39 +430,31 @@ func (c *Client) BeginRequest(
 
 	c.sub(r)
 
-	if err := writeBeginReq(conn, &buf, r.id); err != nil {
+	if err := writeBeginReq(c.c, &buf, r.id); err != nil {
 		return nil, err
 	}
 
-	if err := writeParams(conn, &buf, r.id, params); err != nil {
+	if err := writeParams(c.c, &buf, r.id, params); err != nil {
 		return nil, err
 	}
 
-	go r.receive(wout, werr)
-
-	if err := writeStdin(conn, &buf, r.id, body); err != nil {
-		close(r.cw)
-		return nil, err
-	}
+	go func() {
+		if err := writeStdin(c.c, &buf, r.id, body); err != nil {
+			r.cw <- err
+		}
+	}()
 
 	return r, nil
 }
 
-func sendErr(ch chan error, err error) bool {
-	// TODO(knorton): This should terminate all writers also
-	select {
-	case ch <- err:
-		return true
-	default:
-		return false
-	}
+func (c *Client) startup() error {
+	return nil
 }
 
 func (c *Client) shutdown(err error) {
-	c.sl.Lock()
-	defer c.sl.Unlock()
-	for _, r := range c.sm {
-		sendErr(r.ce, err)
+	for id, r := range c.sm {
+		c.unsub(id)
+		r.cw <- err
 	}
 }
 
@@ -490,7 +467,7 @@ func (c *Client) getReq(id uint16) *Request {
 func receive(c *Client) {
 	var h header
 
-	conn := c.conn()
+	conn := c.c
 
 	for {
 		if err := binary.Read(conn.c, binary.BigEndian, &h); err != nil {
@@ -503,7 +480,6 @@ func receive(c *Client) {
 			return
 		}
 
-		// TODO(knorton): These could be taken from a buffer pool
 		buf := make([]byte, int(h.ContentLength)+int(h.PaddingLength))
 
 		if _, err := io.ReadFull(conn.c, buf); err != nil {
@@ -525,9 +501,7 @@ func receive(c *Client) {
 			r.cw <- stderr(buf)
 		case typeEndRequest:
 			c.unsub(h.ID)
-			r.cw <- stdout(nil)
-			r.cw <- stderr(nil)
-			r.ce <- nil
+			close(r.cw)
 		}
 	}
 }
