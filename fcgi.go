@@ -61,7 +61,7 @@ const (
 	statusUnknownRole
 )
 
-// Client ...
+// Client provides a way to dispatch FCGI requests to a specified server.
 type Client struct {
 	c *conn
 
@@ -112,7 +112,8 @@ func (c *Client) unsub(id uint16) {
 	delete(c.sm, id)
 }
 
-// ParamsFromRequest ...
+// ParamsFromRequest provides a standard way to convert an http.Request to
+// the key-value pairs that are passed as FCGI parameters.
 func ParamsFromRequest(r *http.Request) map[string]string {
 	params := map[string]string{
 		"REQUEST_METHOD":  r.Method,
@@ -143,6 +144,7 @@ func ParamsFromRequest(r *http.Request) map[string]string {
 	return params
 }
 
+// Write the beginning of a request into the given connection.
 func writeBeginReq(c *conn, w *buffer, id uint16) error {
 	binary.Write(w, binary.BigEndian, roleResponder) // role
 	binary.Write(w, binary.BigEndian, flagKeepConn)  // flags
@@ -150,10 +152,14 @@ func writeBeginReq(c *conn, w *buffer, id uint16) error {
 	return c.send(id, typeBeginRequest, w)
 }
 
+// Write an abort request into the given connection.
 func writeAbortReq(c *conn, w *buffer, id uint16) error {
 	return c.send(id, typeAbortRequest, w)
 }
 
+// Encode the length of a key or value using FCGIs compressed length
+// scheme. The encoded length is placed in b and the number of bytes
+// that were required to encode the length is returned.
 func encodeLength(b []byte, n uint32) int {
 	if n > 127 {
 		n |= 1 << 31
@@ -164,18 +170,28 @@ func encodeLength(b []byte, n uint32) int {
 	return 1
 }
 
+// Encode and write the given parameters into the connection. Note that the headers
+// may be fragmented into several writes if they will not fit into a single write.
 func writeParams(c *conn, w *buffer, id uint16, params map[string]string) error {
 	var b [8]byte
 	for k, v := range params {
+		// encode the key's length
 		n := encodeLength(b[:], uint32(len(k)))
+
+		// encode the value's length
 		n += encodeLength(b[n:], uint32(len(v)))
+
+		// the total lenth of this param
 		t := n + len(k) + len(v)
 
-		// this header will never fit and must be discarded
+		// this header itself is so big, it cannot fit into a
+		// write so we just discard it.
 		if t > w.Cap() {
 			continue
 		}
 
+		// if this param would overflow the current buffer, go ahead
+		// and send it.
 		if t > w.Free() {
 			if err := c.send(id, typeParams, w); err != nil {
 				return err
@@ -197,6 +213,8 @@ func writeParams(c *conn, w *buffer, id uint16, params map[string]string) error 
 	return c.send(id, typeParams, w)
 }
 
+// Copy the data from the given reader into the connection as stdin. Note that
+// this may fragment the data into multiple writes.
 func writeStdin(c *conn, w *buffer, id uint16, r io.Reader) error {
 	if r != nil {
 		for {
@@ -214,113 +232,6 @@ func writeStdin(c *conn, w *buffer, id uint16, r io.Reader) error {
 	}
 
 	return c.send(id, typeStdin, w)
-}
-
-type buffer struct {
-	ix int
-	dt [maxWrite + maxPad + 8]byte
-}
-
-func (b *buffer) WriteHeader(id uint16, recType recType, n int) {
-	b.dt[0] = byte(fcgiVersion)
-	b.dt[1] = byte(recType)
-	binary.BigEndian.PutUint16(b.dt[2:4], id)
-	binary.BigEndian.PutUint16(b.dt[4:6], uint16(n))
-	b.dt[6] = 0
-	b.dt[7] = 0
-}
-
-func (b *buffer) Write(p []byte) (int, error) {
-	n := len(p)
-	copy(b.dt[b.ix:], p)
-	b.ix += n
-	return n, nil
-}
-
-func (b *buffer) CopyFrom(r io.Reader) error {
-	n, err := r.Read(b.dt[b.ix:])
-	if err != nil {
-		return err
-	}
-	b.ix += n
-	return nil
-}
-
-func (b *buffer) Reset() {
-	b.ix = 8
-}
-
-func (b *buffer) Bytes() []byte {
-	return b.dt[:b.ix]
-}
-
-func (b *buffer) Cap() int {
-	return len(b.dt) - 8
-}
-
-func (b *buffer) Len() int {
-	return b.ix - 8
-}
-
-func (b *buffer) Free() int {
-	return len(b.dt) - b.ix
-}
-
-type stdout []byte
-type stderr []byte
-
-// Request ...
-type Request struct {
-	id       uint16
-	c        *Client
-	cw       chan interface{}
-	out, err io.Writer
-}
-
-// Abort ...
-func (r *Request) Abort() error {
-	var buf buffer
-	return writeAbortReq(r.c.c, &buf, r.id)
-}
-
-// ID ...
-func (r *Request) ID() uint16 {
-	return r.id
-}
-
-// Wait ...
-func (r *Request) Wait() error {
-	for item := range r.cw {
-		switch t := item.(type) {
-		case stdout:
-			if len(t) == 0 {
-				continue
-			}
-			if _, err := r.out.Write([]byte(t)); err != nil {
-				r.drain()
-				return err
-			}
-		case stderr:
-			if len(t) == 0 {
-				continue
-			}
-			if _, err := r.err.Write([]byte(t)); err != nil {
-				r.drain()
-				return err
-			}
-		case error:
-			return t
-		}
-	}
-	return nil
-}
-
-func (r *Request) drain() {
-	r.c.unsub(r.id)
-	select {
-	case <-r.cw:
-	default:
-	}
 }
 
 func statusFromHeaders(h http.Header) (int, error) {

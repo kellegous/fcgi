@@ -65,7 +65,7 @@ func mustHaveRequest(
 	out io.Reader,
 	status int,
 	hdrs map[string][]string,
-	body string) {
+	body []byte) {
 
 	br := bufio.NewReader(out)
 
@@ -88,8 +88,9 @@ func mustHaveRequest(
 		t.Fatal(err)
 	}
 
-	if buf.String() != body {
-		t.Fatalf("expected body of:\n%s\ngot:%s\n", body, buf.String())
+	if !bytes.Equal(buf.Bytes(), body) {
+		t.Fatalf("expected body of:\n%v\ngot:%v\n", body, buf.String())
+
 	}
 }
 
@@ -129,7 +130,7 @@ func TestStatusOK(t *testing.T) {
 		&bout,
 		http.StatusOK,
 		nil,
-		"Hello FCGI\n")
+		[]byte("Hello FCGI\n"))
 }
 
 func TestStatusNotOK(t *testing.T) {
@@ -169,5 +170,96 @@ func TestStatusNotOK(t *testing.T) {
 		&bout,
 		http.StatusInternalServerError,
 		nil,
-		"Oh No!\n")
+		[]byte("Oh No!\n"))
+}
+
+func TestWithStdin(t *testing.T) {
+	s := newServer(t)
+	defer s.Close()
+
+	s.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(w, r.Body); err != nil {
+			t.Fatal(err)
+		}
+	}))
+
+	c, err := Dial(s.Network(), s.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	params := map[string]string{
+		"REQUEST_METHOD":  "GET",
+		"SERVER_PROTOCOL": "HTTP/1.1",
+	}
+
+	var bout, berr bytes.Buffer
+	req, err := c.BeginRequest(params,
+		bytes.NewBufferString("testing\ntesting\ntesting\n"),
+		&bout,
+		&berr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := req.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	mustHaveRequest(t,
+		&bout,
+		http.StatusOK,
+		nil,
+		[]byte("testing\ntesting\ntesting\n"))
+
+}
+
+func TestWithBigStdin(t *testing.T) {
+	s := newServer(t)
+	defer s.Close()
+
+	s.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(w, r.Body); err != nil {
+			t.Fatal(err)
+		}
+	}))
+
+	c, err := Dial(s.Network(), s.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	params := map[string]string{
+		"REQUEST_METHOD":  "GET",
+		"SERVER_PROTOCOL": "HTTP/1.1",
+	}
+
+	buf := make([]byte, maxWrite+1)
+
+	var bout, berr bytes.Buffer
+	req, err := c.BeginRequest(params,
+		bytes.NewBuffer(buf),
+		&bout,
+		&berr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := req.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	mustHaveRequest(t,
+		&bout,
+		http.StatusOK,
+		nil,
+		buf)
 }
