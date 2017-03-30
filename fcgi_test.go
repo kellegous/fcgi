@@ -60,6 +60,18 @@ func newServer(t *testing.T) *mockServer {
 	}
 }
 
+func stringSlicesAreSame(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i, n := 0, len(a); i < n; i++ {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func mustHaveRequest(
 	t *testing.T,
 	out io.Reader,
@@ -74,9 +86,19 @@ func mustHaveRequest(
 		t.Fatal(err)
 	}
 
-	s, err := statusFromHeaders(http.Header(mh))
+	hdr := http.Header(mh)
+
+	s, err := statusFromHeaders(hdr)
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	for k, v := range hdrs {
+		m := map[string][]string(hdr)
+		if !stringSlicesAreSame(v, m[k]) {
+			t.Fatalf("Expected header %s to be %v got %v",
+				k, v, hdr[k])
+		}
 	}
 
 	if s != status {
@@ -262,4 +284,52 @@ func TestWithBigStdin(t *testing.T) {
 		http.StatusOK,
 		nil,
 		buf)
+}
+
+func TestHeaders(t *testing.T) {
+	s := newServer(t)
+	defer s.Close()
+
+	s.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("X-Foo", "A")
+		w.Header().Add("X-Foo", "B")
+		w.Header().Set("X-Bar", "False")
+	}))
+
+	c, err := Dial(s.Network(), s.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	params := map[string]string{
+		"REQUEST_METHOD":  "GET",
+		"SERVER_PROTOCOL": "HTTP/1.1",
+	}
+
+	var bout, berr bytes.Buffer
+	req, err := c.BeginRequest(params,
+		nil,
+		&bout,
+		&berr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := req.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	mustHaveRequest(t,
+		&bout,
+		http.StatusOK,
+		map[string][]string{
+			"X-Foo": {"A", "B"},
+			"X-Bar": {"False"},
+		},
+		[]byte{})
+
 }

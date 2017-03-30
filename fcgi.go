@@ -336,10 +336,6 @@ func (c *Client) BeginRequest(
 	return r, nil
 }
 
-func (c *Client) startup() error {
-	return nil
-}
-
 func (c *Client) shutdown(err error) {
 	for id, r := range c.sm {
 		c.unsub(id)
