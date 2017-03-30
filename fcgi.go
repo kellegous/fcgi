@@ -63,7 +63,7 @@ const (
 
 // Client provides a way to dispatch FCGI requests to a specified server.
 type Client struct {
-	c *conn
+	c net.Conn
 
 	sl sync.RWMutex
 	sm map[uint16]*Request
@@ -123,16 +123,16 @@ func ParamsFromRequest(r *http.Request) map[string]string {
 }
 
 // Write the beginning of a request into the given connection.
-func writeBeginReq(c *conn, w *buffer, id uint16) error {
+func writeBeginReq(c net.Conn, w *buffer, id uint16) error {
 	binary.Write(w, binary.BigEndian, roleResponder) // role
 	binary.Write(w, binary.BigEndian, flagKeepConn)  // flags
 	w.Write([]byte{0, 0, 0, 0, 0})                   // reserved
-	return c.send(id, typeBeginRequest, w)
+	return w.WriteRecord(c, id, typeBeginRequest)
 }
 
 // Write an abort request into the given connection.
-func writeAbortReq(c *conn, w *buffer, id uint16) error {
-	return c.send(id, typeAbortRequest, w)
+func writeAbortReq(c net.Conn, w *buffer, id uint16) error {
+	return w.WriteRecord(c, id, typeAbortRequest)
 }
 
 // Encode the length of a key or value using FCGIs compressed length
@@ -150,7 +150,7 @@ func encodeLength(b []byte, n uint32) int {
 
 // Encode and write the given parameters into the connection. Note that the headers
 // may be fragmented into several writes if they will not fit into a single write.
-func writeParams(c *conn, w *buffer, id uint16, params map[string]string) error {
+func writeParams(c net.Conn, w *buffer, id uint16, params map[string]string) error {
 	var b [8]byte
 	for k, v := range params {
 		// encode the key's length
@@ -171,7 +171,7 @@ func writeParams(c *conn, w *buffer, id uint16, params map[string]string) error 
 		// if this param would overflow the current buffer, go ahead
 		// and send it.
 		if t > w.Free() {
-			if err := c.send(id, typeParams, w); err != nil {
+			if err := w.WriteRecord(c, id, typeParams); err != nil {
 				return err
 			}
 		}
@@ -182,18 +182,18 @@ func writeParams(c *conn, w *buffer, id uint16, params map[string]string) error 
 	}
 
 	if w.Len() > 0 {
-		if err := c.send(id, typeParams, w); err != nil {
+		if err := w.WriteRecord(c, id, typeParams); err != nil {
 			return err
 		}
 	}
 
 	// send the empty params message
-	return c.send(id, typeParams, w)
+	return w.WriteRecord(c, id, typeParams)
 }
 
 // Copy the data from the given reader into the connection as stdin. Note that
 // this may fragment the data into multiple writes.
-func writeStdin(c *conn, w *buffer, id uint16, r io.Reader) error {
+func writeStdin(c net.Conn, w *buffer, id uint16, r io.Reader) error {
 	if r != nil {
 		for {
 			err := w.CopyFrom(r)
@@ -203,13 +203,13 @@ func writeStdin(c *conn, w *buffer, id uint16, r io.Reader) error {
 				return err
 			}
 
-			if err := c.send(id, typeStdin, w); err != nil {
+			if err := w.WriteRecord(c, id, typeStdin); err != nil {
 				return err
 			}
 		}
 	}
 
-	return c.send(id, typeStdin, w)
+	return w.WriteRecord(c, id, typeStdin)
 }
 
 func statusFromHeaders(h http.Header) (int, error) {
@@ -397,13 +397,13 @@ func receive(c *Client) {
 
 // Dial ...
 func Dial(network, addr string) (*Client, error) {
-	cn, err := net.Dial(network, addr)
+	con, err := net.Dial(network, addr)
 	if err != nil {
 		return nil, err
 	}
 
 	c := &Client{
-		c:  &conn{Conn: cn},
+		c:  con,
 		sm: map[uint16]*Request{},
 	}
 

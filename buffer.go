@@ -68,8 +68,11 @@ func (b *buffer) Free() int {
 	return len(b.dt) - b.ix
 }
 
-func (b *buffer) SendTo(c *conn) error {
-	defer b.Reset()
-	_, err := c.Write(b.Bytes())
+// Write the contents of the buffer as a record of the given type for the given
+// request id.
+func (b *buffer) WriteRecord(w io.Writer, id uint16, recType recType) error {
+	b.WriteHeader(id, recType, b.Len())
+	_, err := w.Write(b.Bytes())
+	b.Reset()
 	return err
 }
