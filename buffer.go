@@ -67,3 +67,9 @@ func (b *buffer) Len() int {
 func (b *buffer) Free() int {
 	return len(b.dt) - b.ix
 }
+
+func (b *buffer) SendTo(c *conn) error {
+	defer b.Reset()
+	_, err := c.Write(b.Bytes())
+	return err
+}

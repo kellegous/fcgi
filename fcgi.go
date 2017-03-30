@@ -70,28 +70,6 @@ type Client struct {
 	id uint16
 }
 
-type conn struct {
-	l sync.Mutex
-	c net.Conn
-}
-
-func (c *conn) sendBytes(p []byte) error {
-	c.l.Lock()
-	defer c.l.Unlock()
-	_, err := c.c.Write(p)
-	return err
-}
-
-func (c *conn) send(id uint16, recType recType, w *buffer) error {
-	defer w.Reset()
-	w.WriteHeader(id, recType, w.Len())
-	return c.sendBytes(w.Bytes())
-}
-
-func (c *conn) Close() error {
-	return c.c.Close()
-}
-
 // Close ...
 func (c *Client) Close() error {
 	c.shutdown(errors.New("client terminated"))
@@ -381,7 +359,7 @@ func receive(c *Client) {
 	conn := c.c
 
 	for {
-		if err := binary.Read(conn.c, binary.BigEndian, &h); err != nil {
+		if err := binary.Read(conn, binary.BigEndian, &h); err != nil {
 			c.shutdown(err)
 			return
 		}
@@ -393,7 +371,7 @@ func receive(c *Client) {
 
 		buf := make([]byte, int(h.ContentLength)+int(h.PaddingLength))
 
-		if _, err := io.ReadFull(conn.c, buf); err != nil {
+		if _, err := io.ReadFull(conn, buf); err != nil {
 			c.shutdown(err)
 			return
 		}
@@ -425,9 +403,7 @@ func Dial(network, addr string) (*Client, error) {
 	}
 
 	c := &Client{
-		c: &conn{
-			c: cn,
-		},
+		c:  &conn{Conn: cn},
 		sm: map[uint16]*Request{},
 	}
 
