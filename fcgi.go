@@ -92,30 +92,28 @@ func (c *Client) unsub(id uint16) {
 
 // ParamsFromRequest provides a standard way to convert an http.Request to
 // the key-value pairs that are passed as FCGI parameters.
-func ParamsFromRequest(r *http.Request) map[string]string {
-	params := map[string]string{
-		"REQUEST_METHOD":  r.Method,
-		"SERVER_PROTOCOL": fmt.Sprintf("HTTP/%d.%d", r.ProtoMajor, r.ProtoMinor),
-		"HTTP_HOST":       r.Host,
-		"CONTENT_LENGTH":  fmt.Sprintf("%d", r.ContentLength),
-		"CONTENT_TYPE":    r.Header.Get("Content-Type"),
-		"REQUEST_URI":     r.RequestURI,
-		"PATH_INFO":       r.URL.Path,
+func ParamsFromRequest(r *http.Request) map[string][]string {
+	params := map[string][]string{
+		"REQUEST_METHOD":  {r.Method},
+		"SERVER_PROTOCOL": {fmt.Sprintf("HTTP/%d.%d", r.ProtoMajor, r.ProtoMinor)},
+		"HTTP_HOST":       {r.Host},
+		"CONTENT_LENGTH":  {fmt.Sprintf("%d", r.ContentLength)},
+		"CONTENT_TYPE":    {r.Header.Get("Content-Type")},
+		"REQUEST_URI":     {r.RequestURI},
+		"PATH_INFO":       {r.URL.Path},
 	}
 
-	for k, v := range r.Header {
+	for key, vals := range r.Header {
 		name := fmt.Sprintf("HTTP_%s",
-			strings.ToUpper(strings.Replace(k, "-", "_", -1)))
-		// TODO(knorton): What the fuck do these shit servers do with multi-value
-		// headers?
-		params[name] = v[0]
+			strings.ToUpper(strings.Replace(key, "-", "_", -1)))
+		params[name] = vals
 	}
 
 	https := "Off"
 	if r.TLS != nil && r.TLS.HandshakeComplete {
 		https = "On"
 	}
-	params["HTTPS"] = https
+	params["HTTPS"] = []string{https}
 
 	// TODO(knorton): REMOTE_HOST and REMOTE_PORT
 
@@ -150,35 +148,37 @@ func encodeLength(b []byte, n uint32) int {
 
 // Encode and write the given parameters into the connection. Note that the headers
 // may be fragmented into several writes if they will not fit into a single write.
-func writeParams(c net.Conn, w *buffer, id uint16, params map[string]string) error {
+func writeParams(c net.Conn, w *buffer, id uint16, params map[string][]string) error {
 	var b [8]byte
-	for k, v := range params {
-		// encode the key's length
-		n := encodeLength(b[:], uint32(len(k)))
+	for key, vals := range params {
+		for _, val := range vals {
+			// encode the key's length
+			n := encodeLength(b[:], uint32(len(key)))
 
-		// encode the value's length
-		n += encodeLength(b[n:], uint32(len(v)))
+			// encode the value's length
+			n += encodeLength(b[n:], uint32(len(val)))
 
-		// the total lenth of this param
-		t := n + len(k) + len(v)
+			// the total lenth of this param
+			t := n + len(key) + len(val)
 
-		// this header itself is so big, it cannot fit into a
-		// write so we just discard it.
-		if t > w.Cap() {
-			continue
-		}
-
-		// if this param would overflow the current buffer, go ahead
-		// and send it.
-		if t > w.Free() {
-			if err := w.WriteRecord(c, id, typeParams); err != nil {
-				return err
+			// this header itself is so big, it cannot fit into a
+			// write so we just discard it.
+			if t > w.Cap() {
+				continue
 			}
-		}
 
-		w.Write(b[:n])
-		w.Write([]byte(k))
-		w.Write([]byte(v))
+			// if this param would overflow the current buffer, go ahead
+			// and send it.
+			if t > w.Free() {
+				if err := w.WriteRecord(c, id, typeParams); err != nil {
+					return err
+				}
+			}
+
+			w.Write(b[:n])
+			w.Write([]byte(key))
+			w.Write([]byte(val))
+		}
 	}
 
 	if w.Len() > 0 {
@@ -237,7 +237,7 @@ func filterHeaders(h http.Header) {
 }
 
 func (c *Client) ServeHTTP(
-	params map[string]string,
+	params map[string][]string,
 	w http.ResponseWriter,
 	r *http.Request) {
 
@@ -302,7 +302,7 @@ func (c *Client) ServeHTTP(
 
 // BeginRequest ...
 func (c *Client) BeginRequest(
-	params map[string]string,
+	params map[string][]string,
 	body io.Reader,
 	wout io.Writer,
 	werr io.Writer) (*Request, error) {

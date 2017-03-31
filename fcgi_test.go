@@ -116,6 +116,20 @@ func mustHaveRequest(
 	}
 }
 
+func paramsFor(verb string,
+	params map[string][]string) map[string][]string {
+	p := map[string][]string{
+		"REQUEST_METHOD":  {verb},
+		"SERVER_PROTOCOL": {"HTTP/1.1"},
+	}
+
+	for key, vals := range params {
+		p[key] = vals
+	}
+
+	return p
+}
+
 func TestStatusOK(t *testing.T) {
 	s := newServer(t)
 	defer s.Close()
@@ -129,13 +143,10 @@ func TestStatusOK(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	params := map[string]string{
-		"REQUEST_METHOD":  "GET",
-		"SERVER_PROTOCOL": "HTTP/1.1",
-	}
-
 	var bout, berr bytes.Buffer
-	req, err := c.BeginRequest(params, nil, &bout, &berr)
+	req, err := c.BeginRequest(
+		paramsFor("GET", nil),
+		nil, &bout, &berr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,13 +180,10 @@ func TestStatusNotOK(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	params := map[string]string{
-		"REQUEST_METHOD":  "GET",
-		"SERVER_PROTOCOL": "HTTP/1.1",
-	}
-
 	var bout, berr bytes.Buffer
-	req, err := c.BeginRequest(params, nil, &bout, &berr)
+	req, err := c.BeginRequest(
+		paramsFor("GET", nil),
+		nil, &bout, &berr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,13 +218,9 @@ func TestWithStdin(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	params := map[string]string{
-		"REQUEST_METHOD":  "GET",
-		"SERVER_PROTOCOL": "HTTP/1.1",
-	}
-
 	var bout, berr bytes.Buffer
-	req, err := c.BeginRequest(params,
+	req, err := c.BeginRequest(
+		paramsFor("GET", nil),
 		bytes.NewBufferString("testing\ntesting\ntesting\n"),
 		&bout,
 		&berr)
@@ -255,15 +259,11 @@ func TestWithBigStdin(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	params := map[string]string{
-		"REQUEST_METHOD":  "GET",
-		"SERVER_PROTOCOL": "HTTP/1.1",
-	}
-
 	buf := make([]byte, maxWrite+1)
 
 	var bout, berr bytes.Buffer
-	req, err := c.BeginRequest(params,
+	req, err := c.BeginRequest(
+		paramsFor("GET", nil),
 		bytes.NewBuffer(buf),
 		&bout,
 		&berr)
@@ -291,6 +291,16 @@ func TestHeaders(t *testing.T) {
 	defer s.Close()
 
 	s.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// TODO(knorton): There is a bug in the golang fcgi implementation
+		// that fails to retain multi-value headers. It only keeps the last.
+		if v := r.Header.Get("X-Foo"); v != "B" {
+			t.Fatalf("header X-Foo should be [\"B\"], got %v", v)
+		}
+
+		if v := r.Header.Get("X-Bar"); v != "False" {
+			t.Fatalf("header X-Bar should be [\"False\"], got %v", v)
+		}
+
 		w.Header().Add("X-Foo", "A")
 		w.Header().Add("X-Foo", "B")
 		w.Header().Set("X-Bar", "False")
@@ -301,13 +311,12 @@ func TestHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	params := map[string]string{
-		"REQUEST_METHOD":  "GET",
-		"SERVER_PROTOCOL": "HTTP/1.1",
-	}
-
 	var bout, berr bytes.Buffer
-	req, err := c.BeginRequest(params,
+	req, err := c.BeginRequest(
+		paramsFor("GET", map[string][]string{
+			"HTTP_X_FOO": {"A", "B"},
+			"HTTP_X_BAR": {"False"},
+		}),
 		nil,
 		&bout,
 		&berr)
