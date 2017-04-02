@@ -457,16 +457,16 @@ func TestConcurrencyOnStdout(t *testing.T) {
 
 	// This ensures that the two requests send their stdout back in an
 	// interleaved fashion.
-	m["B"] <- bData[:1024]
+	m["B"] <- bData[:len(bData)/2]
 	<-wall
 
-	m["A"] <- aData[:1024]
+	m["A"] <- aData[:len(aData)/2]
 	<-wall
 
-	m["B"] <- bData[1024:]
+	m["B"] <- bData[len(bData)/2:]
 	<-wall
 
-	m["A"] <- aData[1024:]
+	m["A"] <- aData[len(aData)/2:]
 	<-wall
 
 	close(m["B"])
