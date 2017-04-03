@@ -209,6 +209,11 @@ func writeStdin(c net.Conn, w *buffer, id uint16, r io.Reader) error {
 		}
 	}
 
+	// If our body is empty, we probably don't need to send
+	// record at all.
+	if w.Len() == 0 {
+		return nil
+	}
 	return w.WriteRecord(c, id, typeStdin)
 }
 
