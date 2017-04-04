@@ -48,7 +48,7 @@ func (r *Request) Wait() error {
 				return err
 			}
 		case error:
-			return t.(error)
+			return t
 		default:
 			// t will always be nil
 			return nil
