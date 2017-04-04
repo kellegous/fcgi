@@ -112,8 +112,7 @@ func mustHaveRequest(
 	}
 
 	if !bytes.Equal(buf.Bytes(), body) {
-		t.Fatalf("expected body of:\n%v\ngot:%v\n", body, buf.String())
-
+		t.Fatalf("expected by of %v got %v", body, buf.Bytes())
 	}
 }
 
@@ -424,8 +423,8 @@ func TestConcurrencyOnStdout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	aData := newRandomData(t, 2048)
-	bData := newRandomData(t, 2048)
+	aData := newRandomData(t, 2050)
+	bData := newRandomData(t, 2050)
 
 	go func() {
 		if err := ra.Wait(); err != nil {
@@ -471,6 +470,106 @@ func TestConcurrencyOnStdout(t *testing.T) {
 
 	close(m["B"])
 	close(m["A"])
+
+	<-wall
+	<-wall
+}
+
+type syncReader struct {
+	b  []byte
+	ch chan []byte
+}
+
+func (r *syncReader) Read(p []byte) (int, error) {
+	if len(r.b) == 0 {
+		r.b = <-r.ch
+	}
+
+	if len(r.b) == 0 {
+		return 0, io.EOF
+	}
+
+	n := copy(p, r.b)
+	r.b = r.b[n:]
+	return n, nil
+}
+
+func TestConcurrencyOnStdin(t *testing.T) {
+	s := newServer(t)
+	defer s.Close()
+
+	// this provides a sync barrier for each step in this test.
+	wall := make(chan struct{})
+
+	s.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(w, r.Body); err != nil {
+			t.Fatal(err)
+		}
+	}))
+
+	aData := newRandomData(t, 2050)
+	bData := newRandomData(t, 2050)
+
+	c, err := Dial(s.Network(), s.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	ain := syncReader{ch: make(chan []byte)}
+	var aout, aerr bytes.Buffer
+	ra, err := c.BeginRequest(
+		paramsFor("GET", nil),
+		&ain, &aout, &aerr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bin := syncReader{ch: make(chan []byte)}
+	var bout, berr bytes.Buffer
+	rb, err := c.BeginRequest(
+		paramsFor("GET", nil),
+		&bin, &bout, &berr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		if err := ra.Wait(); err != nil {
+			t.Fatal(err)
+		}
+
+		mustHaveRequest(t,
+			&aout,
+			http.StatusOK,
+			nil,
+			aData)
+
+		wall <- struct{}{}
+	}()
+
+	go func() {
+		if err := rb.Wait(); err != nil {
+			t.Fatal(err)
+		}
+
+		mustHaveRequest(t,
+			&bout,
+			http.StatusOK,
+			nil,
+			bData)
+
+		wall <- struct{}{}
+	}()
+
+	bin.ch <- bData[:len(bData)/2]
+	ain.ch <- aData[:len(aData)/2]
+
+	bin.ch <- bData[len(bData)/2:]
+	ain.ch <- aData[len(aData)/2:]
+
+	bin.ch <- nil
+	ain.ch <- nil
 
 	<-wall
 	<-wall
