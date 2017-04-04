@@ -10,6 +10,7 @@ type Request struct {
 	id       uint16
 	c        *Client
 	cw       chan interface{}
+	done     chan struct{}
 	out, err io.Writer
 }
 
@@ -47,7 +48,10 @@ func (r *Request) Wait() error {
 				return err
 			}
 		case error:
-			return t
+			return t.(error)
+		default:
+			// t will always be nil
+			return nil
 		}
 	}
 	return nil

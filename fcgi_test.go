@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -136,30 +137,6 @@ func newRandomData(t *testing.T, n int) []byte {
 		t.Fatal(err)
 	}
 	return b
-}
-
-func concat(bs ...[]byte) []byte {
-	n := 0
-	for _, b := range bs {
-		n += len(b)
-	}
-	buf := make([]byte, n)
-
-	o := 0
-	for _, b := range bs {
-		copy(buf[o:], b)
-		o += len(b)
-	}
-
-	return buf
-}
-
-func TestConcat(t *testing.T) {
-	a := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05}
-	b := concat([]byte{0x00}, []byte{0x01, 0x02}, []byte{0x03, 0x04, 0x05})
-	if !bytes.Equal(a, b) {
-		t.Fatalf("%v vs %v", a, b)
-	}
 }
 
 func TestStatusOK(t *testing.T) {
@@ -573,4 +550,68 @@ func TestConcurrencyOnStdin(t *testing.T) {
 
 	<-wall
 	<-wall
+}
+
+func TestServerTerminatesWithoutTakingStdin(t *testing.T) {
+	s := newServer(t)
+	defer s.Close()
+
+	go func() {
+		c, err := s.list.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var hdr header
+
+		// First read the begin req
+		if err := binary.Read(c, binary.BigEndian, &hdr); err != nil {
+			t.Fatal(err)
+		}
+
+		// next read the content for that request
+		b := make([]byte, int(hdr.ContentLength))
+		if _, err := io.ReadFull(c, b); err != nil {
+			t.Fatal(err)
+		}
+
+		// next read the params which will have zero length
+		if err := binary.Read(c, binary.BigEndian, &hdr); err != nil {
+			t.Fatal(err)
+		}
+
+		var w buffer
+		w.Reset()
+
+		// now the server abruptly terminates the request
+		if err := w.WriteRecord(c, hdr.ID, typeEndRequest); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	c, err := Dial(s.Network(), s.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	buf := newRandomData(t, maxWrite+512)
+
+	var bout, berr bytes.Buffer
+	req, err := c.BeginRequest(
+		nil,
+		bytes.NewBuffer(buf),
+		&bout,
+		&berr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := req.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	if bout.Len() > 0 {
+		t.Fatalf("no output expected, got %v", bout.Bytes())
+	}
 }

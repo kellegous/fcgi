@@ -308,10 +308,11 @@ func (c *Client) BeginRequest(
 	werr io.Writer) (*Request, error) {
 
 	r := &Request{
-		c:   c,
-		cw:  make(chan interface{}),
-		out: wout,
-		err: werr,
+		c:    c,
+		cw:   make(chan interface{}),
+		done: make(chan struct{}, 1),
+		out:  wout,
+		err:  werr,
 	}
 
 	var buf buffer
@@ -329,7 +330,12 @@ func (c *Client) BeginRequest(
 
 	go func() {
 		if err := writeStdin(c.c, &buf, r.id, body); err != nil {
-			r.cw <- err
+			// send the error only if the request has not already been
+			// canceled.
+			select {
+			case r.cw <- err:
+			case <-r.done:
+			}
 		}
 	}()
 
@@ -385,8 +391,9 @@ func receive(c *Client) {
 		case typeStderr:
 			r.cw <- stderr(buf)
 		case typeEndRequest:
+			r.done <- struct{}{}
 			c.unsub(h.ID)
-			close(r.cw)
+			r.cw <- nil
 		}
 	}
 }
