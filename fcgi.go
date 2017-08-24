@@ -440,6 +440,12 @@ func Dial(network, addr string, options ...DialOption) (*Client, error) {
 		sm: map[uint16]*Request{},
 	}
 
+	for _, f := range options {
+		if err := f(c); err != nil {
+			return nil, err
+		}
+	}
+
 	con, err := net.DialTimeout(network, addr, c.options.dialTimeout)
 	if err != nil {
 		return nil, err
