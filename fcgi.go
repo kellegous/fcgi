@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type recType uint8
@@ -63,11 +64,32 @@ const (
 
 // Client provides a way to dispatch FCGI requests to a specified server.
 type Client struct {
-	c net.Conn
-
+	c  *conn
 	sl sync.RWMutex
 	sm map[uint16]*Request
 	id uint16
+}
+
+type conn struct {
+	net.Conn
+	readTimeout  time.Duration
+	writeTimeout time.Duration
+}
+
+func (c *conn) Read(b []byte) (int, error) {
+	if err := c.Conn.SetReadDeadline(time.Now().Add(c.readTimeout)); err != nil {
+		return 0, err
+	}
+
+	return c.Conn.Read(b)
+}
+
+func (c *conn) Write(b []byte) (int, error) {
+	if err := c.Conn.SetWriteDeadline(time.Now().Add(c.readTimeout)); err != nil {
+		return 0, err
+	}
+
+	return c.Conn.Write(b)
 }
 
 // Close ...
@@ -405,12 +427,43 @@ func Dial(network, addr string) (*Client, error) {
 		return nil, err
 	}
 
+	return wrapConn(con)
+}
+
+// DialTimeout acts like Dial but takes a timeout. The timeout includes name resolution, if required.
+func DialTimeout(network, addr string, timeout time.Duration) (*Client, error) {
+	con, err := net.DialTimeout(network, addr, timeout)
+	if err != nil {
+		return nil, err
+	}
+
+	return wrapConn(con)
+}
+
+func wrapConn(con net.Conn) (*Client, error) {
+
 	c := &Client{
-		c:  con,
+		c: &conn{
+			Conn:         con,
+			readTimeout:  time.Minute,
+			writeTimeout: time.Minute,
+		},
 		sm: map[uint16]*Request{},
 	}
 
 	go receive(c)
 
 	return c, nil
+}
+
+func (c *Client) SetReadTimeout(timeout time.Duration) {
+	c.sl.Lock()
+	defer c.sl.Unlock()
+	c.c.readTimeout = timeout
+}
+
+func (c *Client) SetWriteTimeout(timeout time.Duration) {
+	c.sl.Lock()
+	defer c.sl.Unlock()
+	c.c.writeTimeout = timeout
 }
