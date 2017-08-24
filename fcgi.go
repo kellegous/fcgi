@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type recType uint8
@@ -61,13 +62,43 @@ const (
 	statusUnknownRole
 )
 
+type clientOptions struct {
+	dialTimeout  time.Duration
+	readTimeout  time.Duration
+	writeTimeout time.Duration
+}
+
+type conn struct {
+	net.Conn
+	client *Client
+}
+
 // Client provides a way to dispatch FCGI requests to a specified server.
 type Client struct {
-	c net.Conn
+	c       *conn
+	options clientOptions
+	sl      sync.RWMutex
+	sm      map[uint16]*Request
+	id      uint16
+}
 
-	sl sync.RWMutex
-	sm map[uint16]*Request
-	id uint16
+// DialOption is a function passed to dial for configuring the client.
+type DialOption func(*Client) error
+
+func (c *conn) Read(b []byte) (int, error) {
+	if err := c.Conn.SetReadDeadline(time.Now().Add(c.client.options.readTimeout)); err != nil {
+		return 0, err
+	}
+
+	return c.Conn.Read(b)
+}
+
+func (c *conn) Write(b []byte) (int, error) {
+	if err := c.Conn.SetWriteDeadline(time.Now().Add(c.client.options.writeTimeout)); err != nil {
+		return 0, err
+	}
+
+	return c.Conn.Write(b)
 }
 
 // Close ...
@@ -398,19 +429,55 @@ func receive(c *Client) {
 	}
 }
 
-// Dial ...
-func Dial(network, addr string) (*Client, error) {
-	con, err := net.Dial(network, addr)
+// Dial creates a new client and attempt to connect.
+func Dial(network, addr string, options ...DialOption) (*Client, error) {
+	c := &Client{
+		options: clientOptions{
+			dialTimeout:  time.Minute,
+			readTimeout:  time.Minute,
+			writeTimeout: time.Minute,
+		},
+		sm: map[uint16]*Request{},
+	}
+
+	con, err := net.DialTimeout(network, addr, c.options.dialTimeout)
 	if err != nil {
 		return nil, err
 	}
 
-	c := &Client{
-		c:  con,
-		sm: map[uint16]*Request{},
+	c.c = &conn{
+		Conn:   con,
+		client: c,
 	}
 
 	go receive(c)
 
 	return c, nil
+}
+
+// WithDialTimeout creates a DialOption that sets the dial timeout.
+// The default is 60 seconds.
+func WithDialTimeout(timeout time.Duration) DialOption {
+	return func(c *Client) error {
+		c.options.dialTimeout = timeout
+		return nil
+	}
+}
+
+// WithReadTimeout creates a DialOption that sets the read timeout.
+// The default is 60 seconds.
+func WithReadTimeout(timeout time.Duration) DialOption {
+	return func(c *Client) error {
+		c.options.readTimeout = timeout
+		return nil
+	}
+}
+
+// WithWriteTimeout creates a DialOption that sets the write timeout.
+// The default is 60 seconds.
+func WithWriteTimeout(timeout time.Duration) DialOption {
+	return func(c *Client) error {
+		c.options.writeTimeout = timeout
+		return nil
+	}
 }
