@@ -342,18 +342,15 @@ func (c *Client) BeginRequest(
 
 	c.sub(r)
 
-	c.c.SetWriteDeadline(time.Now().Add(time.Second * 3))
 	if err := writeBeginReq(c.c, &buf, r.id); err != nil {
 		return nil, err
 	}
 
-	c.c.SetWriteDeadline(time.Now().Add(time.Second * 3))
 	if err := writeParams(c.c, &buf, r.id, params); err != nil {
 		return nil, err
 	}
 
 	go func() {
-		c.c.SetWriteDeadline(time.Now().Add(time.Second * 3))
 		if err := writeStdin(c.c, &buf, r.id, body); err != nil {
 			// send the error only if the request has not already been
 			// canceled.
