@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 )
 
 // DefaultConfig ...
@@ -102,6 +103,18 @@ func MustStart(cfg *Config) *Proc {
 	return p
 }
 
+func waitFor(addr string) error {
+	for {
+		c, err := net.Dial("tcp", addr)
+		if err == nil {
+			c.Close()
+			return nil
+		}
+
+		time.Sleep(1 * time.Second)
+	}
+}
+
 // Start ...
 func Start(cfg *Config) (*Proc, error) {
 	tmp, err := ioutil.TempDir("", "")
@@ -128,6 +141,10 @@ func Start(cfg *Config) (*Proc, error) {
 	c.Stdout = os.Stdout
 
 	if err := c.Start(); err != nil {
+		return nil, err
+	}
+
+	if err := waitFor(addr); err != nil {
 		return nil, err
 	}
 
