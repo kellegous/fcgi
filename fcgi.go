@@ -283,9 +283,10 @@ func (c *Client) ServeHTTP(
 	}
 
 	go func() {
-		defer pw.Close()
 		if err := req.Wait(); err != nil {
-			log.Panic(err)
+			pw.CloseWithError(err)
+		} else {
+			pw.Close()
 		}
 	}()
 
