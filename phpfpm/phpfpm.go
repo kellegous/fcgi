@@ -1,12 +1,17 @@
 package phpfpm
 
 import (
+	"bufio"
+	"io"
 	"io/ioutil"
 	"net"
+	"net/http"
+	"net/textproto"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"text/template"
 	"time"
 )
@@ -39,6 +44,30 @@ type configFile struct {
 	*Config
 	Addr     string
 	ErrorLog string
+}
+
+type response struct {
+	Header http.Header
+	Body   []byte
+}
+
+func readResponse(r io.Reader) (*response, error) {
+	br := bufio.NewReader(r)
+	tr := textproto.NewReader(br)
+	mh, err := tr.ReadMIMEHeader()
+	if err != nil {
+		return nil, err
+	}
+	h := http.Header(mh)
+	b, err := ioutil.ReadAll(br)
+	if err != nil {
+		return nil, err
+	}
+
+	return &response{
+		Header: h,
+		Body:   b,
+	}, nil
 }
 
 func templateFromLines(src []string) (*template.Template, error) {
@@ -86,7 +115,8 @@ func localAddr() (string, error) {
 
 // Shutdown ...
 func (p *Proc) Shutdown() error {
-	errA := p.Process.Kill()
+	// Kill the entire process group
+	errA := syscall.Kill(-p.Process.Pid, syscall.SIGKILL)
 	errB := os.RemoveAll(p.Dir)
 	if errA != nil {
 		return errA
@@ -137,6 +167,9 @@ func Start(cfg *Config) (*Proc, error) {
 	}
 
 	c := exec.Command("php-fpm", "-n", "-y", cf)
+	c.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
 	c.Stderr = os.Stderr
 	c.Stdout = os.Stdout
 

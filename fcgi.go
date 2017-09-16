@@ -245,17 +245,16 @@ func writeStdin(c net.Conn, w *buffer, id uint16, r io.Reader) error {
 
 func statusFromHeaders(h http.Header) (int, error) {
 	text := h.Get("Status")
+	if text == "" {
+		return http.StatusOK, nil
+	}
 
 	ix := strings.Index(text, " ")
 	if ix >= 0 {
 		text = text[:ix]
 	}
 
-	if text == "" {
-		return 200, nil
-	}
-
-	s, err := strconv.ParseInt(text, 10, 32)
+	s, err := strconv.ParseInt(text, 10, 64)
 	if err != nil {
 		return 0, err
 	}
@@ -272,12 +271,6 @@ func (c *Client) ServeHTTP(
 	w http.ResponseWriter,
 	r *http.Request) {
 
-	con, bw, err := w.(http.Hijacker).Hijack()
-	if err != nil {
-		log.Panic(err)
-	}
-	defer con.Close()
-
 	pr, pw := io.Pipe()
 
 	req, err := c.BeginRequest(
@@ -288,6 +281,13 @@ func (c *Client) ServeHTTP(
 	if err != nil {
 		log.Panic(err)
 	}
+
+	go func() {
+		defer pw.Close()
+		if err := req.Wait(); err != nil {
+			log.Panic(err)
+		}
+	}()
 
 	br := bufio.NewReader(pr)
 	tr := textproto.NewReader(br)
@@ -302,31 +302,14 @@ func (c *Client) ServeHTTP(
 		log.Panic(err)
 	}
 
-	if _, err := fmt.Fprintf(bw,
-		"HTTP/1.1 %03d %s\r\n",
-		s,
-		http.StatusText(s)); err != nil {
-		log.Panic(err)
+	w.WriteHeader(s)
+	for key, vals := range h {
+		for _, val := range vals {
+			w.Header().Add(key, val)
+		}
 	}
 
-	if err := h.Write(bw); err != nil {
-		log.Panic(err)
-	}
-
-	if _, err := fmt.Fprint(bw, "\r\n"); err != nil {
-		log.Panic(err)
-	}
-
-	if _, err := io.Copy(bw, br); err != nil {
-		log.Panic(err)
-	}
-
-	// TODO(knorton): Not sure if this is needed
-	if err := bw.Flush(); err != nil {
-		log.Panic(err)
-	}
-
-	if err := req.Wait(); err != nil {
+	if _, err := io.Copy(w, br); err != nil {
 		log.Panic(err)
 	}
 }
