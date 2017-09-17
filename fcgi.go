@@ -62,39 +62,30 @@ const (
 	statusUnknownRole
 )
 
-type clientOptions struct {
-	dialTimeout  time.Duration
-	readTimeout  time.Duration
-	writeTimeout time.Duration
+// Options ...
+type Options struct {
+	dialTimeout time.Duration
+	timeout     time.Duration
 }
 
 type conn struct {
 	net.Conn
-	client *Client
+	timeout time.Duration
 }
 
 // Client provides a way to dispatch FCGI requests to a specified server.
 type Client struct {
-	c       *conn
-	options clientOptions
-	sl      sync.RWMutex
-	sm      map[uint16]*Request
-	id      uint16
+	c  *conn
+	sl sync.RWMutex
+	sm map[uint16]*Request
+	id uint16
 }
 
 // DialOption is a function passed to dial for configuring the client.
-type DialOption func(*Client) error
-
-func (c *conn) Read(b []byte) (int, error) {
-	if err := c.Conn.SetReadDeadline(time.Now().Add(c.client.options.readTimeout)); err != nil {
-		return 0, err
-	}
-
-	return c.Conn.Read(b)
-}
+type DialOption func(*Options) error
 
 func (c *conn) Write(b []byte) (int, error) {
-	if err := c.Conn.SetWriteDeadline(time.Now().Add(c.client.options.writeTimeout)); err != nil {
+	if err := c.SetWriteDeadline(time.Now().Add(c.timeout)); err != nil {
 		return 0, err
 	}
 
@@ -103,8 +94,7 @@ func (c *conn) Write(b []byte) (int, error) {
 
 // Close ...
 func (c *Client) Close() error {
-	c.shutdown(errors.New("client terminated"))
-	return c.c.Close()
+	return c.shutdown(errors.New("client terminated"))
 }
 
 func (c *Client) sub(r *Request) {
@@ -357,11 +347,14 @@ func (c *Client) BeginRequest(
 	return r, nil
 }
 
-func (c *Client) shutdown(err error) {
+func (c *Client) shutdown(err error) error {
+	// dispatch errors to all active requests
 	for id, r := range c.sm {
 		c.unsub(id)
 		r.cw <- err
 	}
+
+	return c.c.Close()
 }
 
 func (c *Client) getReq(id uint16) *Request {
@@ -409,35 +402,44 @@ func receive(c *Client) {
 			r.done <- struct{}{}
 			c.unsub(h.ID)
 			r.cw <- nil
+		default:
+			c.shutdown(fmt.Errorf("unexpected type: %d", h.Type))
+			return
 		}
 	}
 }
 
-// Dial creates a new client and attempt to connect.
-func Dial(network, addr string, options ...DialOption) (*Client, error) {
-	c := &Client{
-		options: clientOptions{
-			dialTimeout:  time.Minute,
-			readTimeout:  time.Minute,
-			writeTimeout: time.Minute,
-		},
-		sm: map[uint16]*Request{},
-	}
-
-	for _, f := range options {
-		if err := f(c); err != nil {
-			return nil, err
+func applyOptions(opts *Options, fns []DialOption) error {
+	for _, fn := range fns {
+		if err := fn(opts); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	con, err := net.DialTimeout(network, addr, c.options.dialTimeout)
+// Dial creates a new client and attempt to connect.
+func Dial(network, addr string, options ...DialOption) (*Client, error) {
+	opts := Options{
+		dialTimeout: time.Minute,
+		timeout:     time.Minute,
+	}
+
+	if err := applyOptions(&opts, options); err != nil {
+		return nil, err
+	}
+
+	con, err := net.DialTimeout(network, addr, opts.dialTimeout)
 	if err != nil {
 		return nil, err
 	}
 
-	c.c = &conn{
-		Conn:   con,
-		client: c,
+	c := &Client{
+		c: &conn{
+			Conn:    con,
+			timeout: opts.timeout,
+		},
+		sm: map[uint16]*Request{},
 	}
 
 	go receive(c)
@@ -448,26 +450,17 @@ func Dial(network, addr string, options ...DialOption) (*Client, error) {
 // WithDialTimeout creates a DialOption that sets the dial timeout.
 // The default is 60 seconds.
 func WithDialTimeout(timeout time.Duration) DialOption {
-	return func(c *Client) error {
-		c.options.dialTimeout = timeout
+	return func(o *Options) error {
+		o.dialTimeout = timeout
 		return nil
 	}
 }
 
-// WithReadTimeout creates a DialOption that sets the read timeout.
-// The default is 60 seconds.
-func WithReadTimeout(timeout time.Duration) DialOption {
-	return func(c *Client) error {
-		c.options.readTimeout = timeout
-		return nil
-	}
-}
-
-// WithWriteTimeout creates a DialOption that sets the write timeout.
-// The default is 60 seconds.
-func WithWriteTimeout(timeout time.Duration) DialOption {
-	return func(c *Client) error {
-		c.options.writeTimeout = timeout
+// WithTimeout creates a DialOption that sets the timeout for the client dispatching a record
+// to the FCGI backend. The default is 60 seconds.
+func WithTimeout(timeout time.Duration) DialOption {
+	return func(o *Options) error {
+		o.timeout = timeout
 		return nil
 	}
 }
