@@ -333,6 +333,9 @@ func (c *Client) BeginRequest(
 		return nil, err
 	}
 
+	// backends may start emitting output before all stdin has been transmitted,
+	// so we have to be processing messages from the backend before stdin can
+	// be fully accepted.
 	go func() {
 		if err := writeStdin(c.c, &buf, r.id, body); err != nil {
 			// send the error only if the request has not already been
