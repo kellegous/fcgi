@@ -38,6 +38,7 @@ const (
 	maxWrite            = 65535
 	maxPad              = 0
 	fcgiVersion  uint8  = 1
+	flagNone     uint8  = 0
 	flagKeepConn uint8  = 1
 	requestID    uint16 = 1
 )
@@ -58,7 +59,7 @@ const (
 // Write the beginning of a request into the given connection.
 func writeBeginReq(c net.Conn, w *buffer, id uint16) error {
 	binary.Write(w, binary.BigEndian, roleResponder) // role
-	binary.Write(w, binary.BigEndian, flagKeepConn)  // flags
+	binary.Write(w, binary.BigEndian, flagNone)      // flags
 	w.Write([]byte{0, 0, 0, 0, 0})                   // reserved
 	return w.WriteRecord(c, id, typeBeginRequest)
 }

@@ -15,11 +15,10 @@ func main() {
 		log.Panic(err)
 	}
 
-	c, err := fcgi.Dial("unix", "/run/php/php7.0-fpm.sock")
+	c, err := fcgi.NewClient("unix", "/run/php/php7.0-fpm.sock")
 	if err != nil {
 		log.Panic(err)
 	}
-	defer c.Close()
 
 	http.HandleFunc("/",
 		func(w http.ResponseWriter, r *http.Request) {
