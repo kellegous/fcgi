@@ -22,21 +22,23 @@ func TestSingleGet(t *testing.T) {
 	p := MustStart(DefaultConfig)
 	defer p.Shutdown()
 
-	c, err := fcgi.Dial("tcp", p.Addr)
+	c, err := fcgi.NewClient("tcp", p.Addr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
 
 	var bout, berr bytes.Buffer
-	req, err := c.BeginRequest(map[string][]string{
+	req, err := c.NewRequest(map[string][]string{
 		"SCRIPT_FILENAME": {filepath.Join(mustGetWd(), "hello.php")},
 		"REQUEST_METHOD":  {"GET"},
 		"CONTENT_LENGTH":  {"0"},
-	}, nil, &bout, &berr)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	req.Stdout = &bout
+	req.Stderr = &berr
 
 	if err := req.Wait(); err != nil {
 		t.Fatal(err)
@@ -54,11 +56,10 @@ func TestServeHTTP(t *testing.T) {
 	p := MustStart(DefaultConfig)
 	defer p.Shutdown()
 
-	c, err := fcgi.Dial("tcp", p.Addr)
+	c, err := fcgi.NewClient("tcp", p.Addr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
 
 	req, err := http.NewRequest("GET", "/hello", nil)
 	if err != nil {

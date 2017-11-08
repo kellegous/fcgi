@@ -5,12 +5,15 @@ import (
 	"errors"
 	"io"
 	"io/ioutil"
+	"log"
 	"net"
 	"net/http"
 	"net/textproto"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"syscall"
 	"text/template"
@@ -51,6 +54,8 @@ type response struct {
 	Header http.Header
 	Body   []byte
 }
+
+var versionPat = regexp.MustCompile("^PHP 7\\.")
 
 func readResponse(r io.Reader) (*response, error) {
 	br := bufio.NewReader(r)
@@ -147,14 +152,65 @@ func waitFor(addr string) error {
 	}
 }
 
-func lookupPath(cmds ...string) (string, error) {
-	for _, cmd := range cmds {
-		c, err := exec.LookPath(cmd)
-		if err == nil {
-			return c, nil
+func canUseFPM(path string) bool {
+	log.Println(path)
+	cmd := exec.Command(path, "--version")
+
+	r, err := cmd.StdoutPipe()
+	if err != nil {
+		return false
+	}
+
+	if err := cmd.Start(); err != nil {
+		return false
+	}
+
+	b, err := ioutil.ReadAll(r)
+	if err != nil {
+		return false
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return false
+	}
+
+	return versionPat.Match(b)
+}
+
+func pathsToTry() []string {
+	switch runtime.GOOS {
+	case "darwin":
+		return []string{
+			"/usr/local/sbin/php-fpm",
+			"/usr/local/sbin/php71-fpm",
+			"/usr/local/sbin/php70-fpm",
+			"php-fpm",
+			"php71-fpm",
+			"php70-fpm",
+			"php-fpm7.0",
+			"php-fpm7.1",
 		}
 	}
-	return "", errors.New("unable to find command")
+	return []string{
+		"php-fpm",
+		"php-fpm7.0",
+		"php-fpm7.1",
+	}
+}
+
+func findFPMPath() (string, error) {
+	for _, path := range pathsToTry() {
+		log.Println(path)
+		p, err := exec.LookPath(path)
+		if err != nil {
+			continue
+		}
+		if !canUseFPM(p) {
+			continue
+		}
+		return p, nil
+	}
+	return "", errors.New("could not find php-fpm")
 }
 
 // Start ...
@@ -178,10 +234,14 @@ func Start(cfg *Config) (*Proc, error) {
 		return nil, err
 	}
 
-	cmd, err := lookupPath("php-fpm", "php-fpm7.0", "php-fpm7.1")
+	log.Println(cf)
+
+	cmd, err := findFPMPath()
 	if err != nil {
 		return nil, err
 	}
+
+	log.Println(cmd)
 
 	c := exec.Command(cmd, "-n", "-y", cf)
 	c.SysProcAttr = &syscall.SysProcAttr{
