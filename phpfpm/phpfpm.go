@@ -2,6 +2,7 @@ package phpfpm
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"io/ioutil"
 	"net"
@@ -80,6 +81,7 @@ func writeConfig(dst string, c *configFile) error {
 		"daemonize = no",
 		"error_log = {{.ErrorLog}}",
 		"[www]",
+		"user = nobody",
 		"listen = {{.Addr}}",
 		"pm = dynamic",
 		"pm.max_children = {{.MaxChildren}}",
@@ -145,6 +147,16 @@ func waitFor(addr string) error {
 	}
 }
 
+func lookupPath(cmds ...string) (string, error) {
+	for _, cmd := range cmds {
+		c, err := exec.LookPath(cmd)
+		if err == nil {
+			return c, nil
+		}
+	}
+	return "", errors.New("unable to find command")
+}
+
 // Start ...
 func Start(cfg *Config) (*Proc, error) {
 	tmp, err := ioutil.TempDir("", "")
@@ -166,7 +178,12 @@ func Start(cfg *Config) (*Proc, error) {
 		return nil, err
 	}
 
-	c := exec.Command("php-fpm", "-n", "-y", cf)
+	cmd, err := lookupPath("php-fpm", "php-fpm7.0", "php-fpm7.1")
+	if err != nil {
+		return nil, err
+	}
+
+	c := exec.Command(cmd, "-n", "-y", cf)
 	c.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}

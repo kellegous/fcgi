@@ -147,24 +147,21 @@ func TestStatusOK(t *testing.T) {
 		fmt.Fprintln(w, "Hello FCGI")
 	}))
 
-	c, err := Dial(s.Network(), s.Addr())
+	c, err := NewClient(s.Network(), s.Addr())
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var bout, berr bytes.Buffer
-	req, err := c.BeginRequest(
-		paramsFor("GET", nil),
-		nil, &bout, &berr)
+	req, err := c.NewRequest(paramsFor("GET", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := req.Wait(); err != nil {
-		t.Fatal(err)
-	}
+	req.Stdout = &bout
+	req.Stderr = &berr
 
-	if err := c.Close(); err != nil {
+	if err := req.Wait(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -184,24 +181,21 @@ func TestStatusNotOK(t *testing.T) {
 		fmt.Fprintln(w, "Oh No!")
 	}))
 
-	c, err := Dial(s.Network(), s.Addr())
+	c, err := NewClient(s.Network(), s.Addr())
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var bout, berr bytes.Buffer
-	req, err := c.BeginRequest(
-		paramsFor("GET", nil),
-		nil, &bout, &berr)
+	req, err := c.NewRequest(paramsFor("GET", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := req.Wait(); err != nil {
-		t.Fatal(err)
-	}
+	req.Stdout = &bout
+	req.Stderr = &berr
 
-	if err := c.Close(); err != nil {
+	if err := req.Wait(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -222,26 +216,22 @@ func TestWithStdin(t *testing.T) {
 		}
 	}))
 
-	c, err := Dial(s.Network(), s.Addr())
+	c, err := NewClient(s.Network(), s.Addr())
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var bout, berr bytes.Buffer
-	req, err := c.BeginRequest(
-		paramsFor("GET", nil),
-		bytes.NewBufferString("testing\ntesting\ntesting\n"),
-		&bout,
-		&berr)
+	req, err := c.NewRequest(paramsFor("GET", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := req.Wait(); err != nil {
-		t.Fatal(err)
-	}
+	req.Stdin = bytes.NewBufferString("testing\ntesting\ntesting\n")
+	req.Stdout = &bout
+	req.Stderr = &berr
 
-	if err := c.Close(); err != nil {
+	if err := req.Wait(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -263,7 +253,7 @@ func TestWithBigStdin(t *testing.T) {
 		}
 	}))
 
-	c, err := Dial(s.Network(), s.Addr())
+	c, err := NewClient(s.Network(), s.Addr())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,20 +261,16 @@ func TestWithBigStdin(t *testing.T) {
 	buf := make([]byte, maxWrite+1)
 
 	var bout, berr bytes.Buffer
-	req, err := c.BeginRequest(
-		paramsFor("GET", nil),
-		bytes.NewBuffer(buf),
-		&bout,
-		&berr)
+	req, err := c.NewRequest(paramsFor("GET", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := req.Wait(); err != nil {
-		t.Fatal(err)
-	}
+	req.Stdin = bytes.NewBuffer(buf)
+	req.Stdout = &bout
+	req.Stderr = &berr
 
-	if err := c.Close(); err != nil {
+	if err := req.Wait(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -315,29 +301,25 @@ func TestHeaders(t *testing.T) {
 		w.Header().Set("X-Bar", "False")
 	}))
 
-	c, err := Dial(s.Network(), s.Addr())
+	c, err := NewClient(s.Network(), s.Addr())
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var bout, berr bytes.Buffer
-	req, err := c.BeginRequest(
+	req, err := c.NewRequest(
 		paramsFor("GET", map[string][]string{
 			"HTTP_X_FOO": {"A", "B"},
 			"HTTP_X_BAR": {"False"},
-		}),
-		nil,
-		&bout,
-		&berr)
+		}))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := req.Wait(); err != nil {
-		t.Fatal(err)
-	}
+	req.Stdout = &bout
+	req.Stderr = &berr
 
-	if err := c.Close(); err != nil {
+	if err := req.Wait(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -350,206 +332,6 @@ func TestHeaders(t *testing.T) {
 		},
 		[]byte{})
 
-}
-
-func TestConcurrencyOnStdout(t *testing.T) {
-	s := newServer(t)
-	defer s.Close()
-
-	m := map[string]chan []byte{
-		"A": make(chan []byte),
-		"B": make(chan []byte),
-	}
-
-	// this provides a sync barrier for each step in this test.
-	wall := make(chan struct{})
-
-	s.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		name := r.Header.Get("Name")
-		for b := range m[name] {
-			if _, err := w.Write(b); err != nil {
-				t.Fatal(err)
-			}
-			wall <- struct{}{}
-		}
-	}))
-
-	c, err := Dial(s.Network(), s.Addr())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-
-	var aout, aerr bytes.Buffer
-	ra, err := c.BeginRequest(
-		paramsFor("GET", map[string][]string{
-			"HTTP_NAME": {"A"},
-		}),
-		nil, &aout, &aerr)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var bout, berr bytes.Buffer
-	rb, err := c.BeginRequest(
-		paramsFor("GET", map[string][]string{
-			"HTTP_NAME": {"B"},
-		}),
-		nil, &bout, &berr)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	aData := newRandomData(t, 2050)
-	bData := newRandomData(t, 2050)
-
-	go func() {
-		if err := ra.Wait(); err != nil {
-			t.Fatal(err)
-		}
-
-		mustHaveRequest(t,
-			&aout,
-			http.StatusOK,
-			nil,
-			aData)
-
-		wall <- struct{}{}
-	}()
-
-	go func() {
-		if err := rb.Wait(); err != nil {
-			t.Fatal(err)
-		}
-
-		mustHaveRequest(t,
-			&bout,
-			http.StatusOK,
-			nil,
-			bData)
-
-		wall <- struct{}{}
-	}()
-
-	// This ensures that the two requests send their stdout back in an
-	// interleaved fashion.
-	m["B"] <- bData[:len(bData)/2]
-	<-wall
-
-	m["A"] <- aData[:len(aData)/2]
-	<-wall
-
-	m["B"] <- bData[len(bData)/2:]
-	<-wall
-
-	m["A"] <- aData[len(aData)/2:]
-	<-wall
-
-	close(m["B"])
-	close(m["A"])
-
-	<-wall
-	<-wall
-}
-
-type syncReader struct {
-	b  []byte
-	ch chan []byte
-}
-
-func (r *syncReader) Read(p []byte) (int, error) {
-	if len(r.b) == 0 {
-		r.b = <-r.ch
-	}
-
-	if len(r.b) == 0 {
-		return 0, io.EOF
-	}
-
-	n := copy(p, r.b)
-	r.b = r.b[n:]
-	return n, nil
-}
-
-func TestConcurrencyOnStdin(t *testing.T) {
-	s := newServer(t)
-	defer s.Close()
-
-	// this provides a sync barrier for each step in this test.
-	wall := make(chan struct{})
-
-	s.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, err := io.Copy(w, r.Body); err != nil {
-			t.Fatal(err)
-		}
-	}))
-
-	aData := newRandomData(t, 2050)
-	bData := newRandomData(t, 2050)
-
-	c, err := Dial(s.Network(), s.Addr())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-
-	ain := syncReader{ch: make(chan []byte)}
-	var aout, aerr bytes.Buffer
-	ra, err := c.BeginRequest(
-		paramsFor("GET", nil),
-		&ain, &aout, &aerr)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	bin := syncReader{ch: make(chan []byte)}
-	var bout, berr bytes.Buffer
-	rb, err := c.BeginRequest(
-		paramsFor("GET", nil),
-		&bin, &bout, &berr)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	go func() {
-		if err := ra.Wait(); err != nil {
-			t.Fatal(err)
-		}
-
-		mustHaveRequest(t,
-			&aout,
-			http.StatusOK,
-			nil,
-			aData)
-
-		wall <- struct{}{}
-	}()
-
-	go func() {
-		if err := rb.Wait(); err != nil {
-			t.Fatal(err)
-		}
-
-		mustHaveRequest(t,
-			&bout,
-			http.StatusOK,
-			nil,
-			bData)
-
-		wall <- struct{}{}
-	}()
-
-	bin.ch <- bData[:len(bData)/2]
-	ain.ch <- aData[:len(aData)/2]
-
-	bin.ch <- bData[len(bData)/2:]
-	ain.ch <- aData[len(aData)/2:]
-
-	bin.ch <- nil
-	ain.ch <- nil
-
-	<-wall
-	<-wall
 }
 
 func TestServerTerminatesWithoutTakingStdin(t *testing.T) {
@@ -589,23 +371,22 @@ func TestServerTerminatesWithoutTakingStdin(t *testing.T) {
 		}
 	}()
 
-	c, err := Dial(s.Network(), s.Addr())
+	c, err := NewClient(s.Network(), s.Addr())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
 
 	buf := newRandomData(t, maxWrite+512)
 
 	var bout, berr bytes.Buffer
-	req, err := c.BeginRequest(
-		nil,
-		bytes.NewBuffer(buf),
-		&bout,
-		&berr)
+	req, err := c.NewRequest(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	req.Stdin = bytes.NewBuffer(buf)
+	req.Stdout = &bout
+	req.Stderr = &berr
 
 	if err := req.Wait(); err != nil {
 		t.Fatal(err)
@@ -613,5 +394,58 @@ func TestServerTerminatesWithoutTakingStdin(t *testing.T) {
 
 	if bout.Len() > 0 {
 		t.Fatalf("no output expected, got %v", bout.Bytes())
+	}
+}
+
+func TestAppClosesAbruptly(t *testing.T) {
+	s := newServer(t)
+	defer s.Close()
+
+	go func() {
+		c, err := s.list.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var hdr header
+
+		// First read the begin req
+		if err := binary.Read(c, binary.BigEndian, &hdr); err != nil {
+			t.Fatal(err)
+		}
+
+		// next read the content for that request
+		b := make([]byte, int(hdr.ContentLength))
+		if _, err := io.ReadFull(c, b); err != nil {
+			t.Fatal(err)
+		}
+
+		// next read the params which will have zero length
+		if err := binary.Read(c, binary.BigEndian, &hdr); err != nil {
+			t.Fatal(err)
+		}
+
+		c.Close()
+	}()
+
+	c, err := NewClient(s.Network(), s.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	buf := newRandomData(t, maxWrite+512)
+
+	var bout, berr bytes.Buffer
+	req, err := c.NewRequest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req.Stdin = bytes.NewBuffer(buf)
+	req.Stdout = &bout
+	req.Stderr = &berr
+
+	if err := req.Wait(); err == nil {
+		t.Fatal("expected error")
 	}
 }

@@ -37,6 +37,7 @@ func TestSingleGet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if err := req.Wait(); err != nil {
 		t.Fatal(err)
 	}
